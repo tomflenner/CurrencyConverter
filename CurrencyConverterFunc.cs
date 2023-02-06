@@ -38,6 +38,11 @@ namespace CurrencyConverter.Function
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequest req,
             ILogger log)
         {
+            string targetCurrency = req.Query["currency"];
+
+            if (string.IsNullOrEmpty(targetCurrency))
+                return new BadRequestObjectResult("Missing the query parameter currency in HTTP GET Request");
+
             var httpClient = new HttpClient();
             var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{_configuration["ExchangeRateApiKey"]}/latest/EUR";
             var response = await httpClient.GetAsync(exchangeRateApiUrl);
@@ -46,7 +51,23 @@ namespace CurrencyConverter.Function
             {
                 var content = await response.Content.ReadAsStringAsync();
                 var apiContentResponse = JsonConvert.DeserializeObject<ExchangeRateApiResponse>(content);
-                return new OkObjectResult(apiContentResponse);
+
+                if (apiContentResponse.ConvertionRates is not null)
+                {
+                    decimal targetCurrencyRate;
+                    if (apiContentResponse.ConvertionRates.TryGetValue(targetCurrency.ToUpper(), out targetCurrencyRate))
+                    {
+                        return new OkObjectResult(new { CurrencyRate = targetCurrencyRate });
+                    }
+                    else
+                    {
+                        return new ObjectResult($"Currency {targetCurrency} not found") { StatusCode = StatusCodes.Status404NotFound };
+                    }
+                }
+                else
+                {
+                    return new ObjectResult("No data found for exchange rate") { StatusCode = StatusCodes.Status404NotFound };
+                }
             }
             else
             {
