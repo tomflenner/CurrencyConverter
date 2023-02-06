@@ -7,29 +7,51 @@ using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Net.Http;
+using Microsoft.Extensions.Configuration;
+using System.Collections.Generic;
+using Newtonsoft.Json.Converters;
 
 namespace CurrencyConverter.Function
 {
-    public static class CurrencyConverterFunc
+    public class ExchangeRateApiResponse
     {
+        public string Result { get; set; }
+        [JsonProperty("time_next_update_unix")]
+        public uint UnixExpirationDate { get; set; }
+        [JsonProperty("conversion_rates")]
+        public Dictionary<string, decimal> ConvertionRates { get; set; }
+    }
+
+    public class CurrencyConverterFunc
+    {
+        private readonly IConfiguration _configuration;
+
+        public CurrencyConverterFunc(IConfiguration configuration)
+        {
+            _configuration = configuration;
+        }
+
         [FunctionName("CurrencyConverterFunc")]
-        public static async Task<IActionResult> Run(
+        public async Task<IActionResult> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequest req,
             ILogger log)
         {
-            log.LogInformation("C# HTTP trigger function processed a request.");
+            var httpClient = new HttpClient();
+            var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{_configuration["ExchangeRateApiKey"]}/latest/EUR";
+            var response = await httpClient.GetAsync(exchangeRateApiUrl);
 
-            string name = req.Query["name"];
-
-            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            dynamic data = JsonConvert.DeserializeObject(requestBody);
-            name = name ?? data?.name;
-
-            string responseMessage = string.IsNullOrEmpty(name)
-                ? "This HTTP triggered function executed successfully. Pass a name in the query string or in the request body for a personalized response."
-                : $"Hello, {name}. This HTTP triggered function executed successfully.";
-
-            return new OkObjectResult(responseMessage);
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                var apiContentResponse = JsonConvert.DeserializeObject<ExchangeRateApiResponse>(content);
+                return new OkObjectResult(apiContentResponse);
+            }
+            else
+            {
+                return new BadRequestObjectResult("Error, something went wrong");
+            }
         }
     }
 }
