@@ -18,8 +18,13 @@ namespace CurrencyConverter.Function
     public class ExchangeRateApiResponse
     {
         public string Result { get; set; }
+
         [JsonProperty("time_next_update_unix")]
         public uint UnixExpirationDate { get; set; }
+
+        [JsonProperty("time_last_update_unix")]
+        public uint UnixLastUpdateDate { get; set; }
+
         [JsonProperty("conversion_rates")]
         public Dictionary<string, decimal> ConvertionRates { get; set; }
     }
@@ -57,7 +62,7 @@ namespace CurrencyConverter.Function
                     decimal targetCurrencyRate;
                     if (apiContentResponse.ConvertionRates.TryGetValue(targetCurrency.ToUpper(), out targetCurrencyRate))
                     {
-                        return new OkObjectResult(new { CurrencyRate = targetCurrencyRate });
+                        return new OkObjectResult(new { CurrencyRate = targetCurrencyRate, UnixTimeLastUpdate = apiContentResponse.UnixLastUpdateDate });
                     }
                     else
                     {
