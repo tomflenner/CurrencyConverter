@@ -7,11 +7,10 @@ using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 using System.Net.Http;
 using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
-using Newtonsoft.Json.Converters;
+using StackExchange.Redis;
 
 namespace CurrencyConverter.Function
 {
@@ -31,6 +30,7 @@ namespace CurrencyConverter.Function
 
     public class CurrencyConverterFunc
     {
+        private const string CACHE_KEY = "EUR";
         private readonly IConfiguration _configuration;
 
         public CurrencyConverterFunc(IConfiguration configuration)
@@ -48,35 +48,54 @@ namespace CurrencyConverter.Function
             if (string.IsNullOrEmpty(targetCurrency))
                 return new BadRequestObjectResult("Missing the query parameter currency in HTTP GET Request");
 
-            var httpClient = new HttpClient();
-            var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{_configuration["ExchangeRateApiKey"]}/latest/EUR";
-            var response = await httpClient.GetAsync(exchangeRateApiUrl);
+            var cache = ConnectionMultiplexer.Connect(_configuration["RedisConnectionString"]).GetDatabase();
 
-            if (response.IsSuccessStatusCode)
+            var exchangeRateApiCachedData = await cache.StringGetAsync(CACHE_KEY);
+
+            ExchangeRateApiResponse exchangeRateApiResponse = null;
+
+            if (!exchangeRateApiCachedData.IsNullOrEmpty)
             {
-                var content = await response.Content.ReadAsStringAsync();
-                var apiContentResponse = JsonConvert.DeserializeObject<ExchangeRateApiResponse>(content);
+                exchangeRateApiResponse = JsonConvert.DeserializeObject<ExchangeRateApiResponse>(exchangeRateApiCachedData.ToString());
+            }
+            else
+            {
+                var httpClient = new HttpClient();
+                var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{_configuration["ExchangeRateApiKey"]}/latest/EUR";
+                var response = await httpClient.GetAsync(exchangeRateApiUrl);
 
-                if (apiContentResponse.ConvertionRates is not null)
+                if (response.IsSuccessStatusCode)
                 {
-                    decimal targetCurrencyRate;
-                    if (apiContentResponse.ConvertionRates.TryGetValue(targetCurrency.ToUpper(), out targetCurrencyRate))
-                    {
-                        return new OkObjectResult(new { CurrencyRate = targetCurrencyRate, UnixTimeLastUpdate = apiContentResponse.UnixLastUpdateDate });
-                    }
-                    else
-                    {
-                        return new ObjectResult($"Currency {targetCurrency} not found") { StatusCode = StatusCodes.Status404NotFound };
-                    }
+                    exchangeRateApiResponse = JsonConvert.DeserializeObject<ExchangeRateApiResponse>(await response.Content.ReadAsStringAsync());
+
+                    DateTime specificDate = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(exchangeRateApiResponse.UnixExpirationDate);
+                    DateTime currentDate = DateTime.UtcNow;
+
+                    TimeSpan expiry = specificDate - currentDate;
+
+                    await cache.StringSetAsync(CACHE_KEY, JsonConvert.SerializeObject(exchangeRateApiResponse), expiry);
                 }
                 else
                 {
-                    return new ObjectResult("No data found for exchange rate") { StatusCode = StatusCodes.Status404NotFound };
+                    return new BadRequestObjectResult("Error, something went wrong");
+                }
+            }
+
+            if (exchangeRateApiResponse.ConvertionRates is not null)
+            {
+                decimal targetCurrencyRate;
+                if (exchangeRateApiResponse.ConvertionRates.TryGetValue(targetCurrency.ToUpper(), out targetCurrencyRate))
+                {
+                    return new OkObjectResult(new { CurrencyCode = targetCurrency.ToUpper(), CurrencyRate = targetCurrencyRate, UnixTimeLastUpdate = exchangeRateApiResponse.UnixLastUpdateDate });
+                }
+                else
+                {
+                    return new ObjectResult($"Currency {targetCurrency} not found") { StatusCode = StatusCodes.Status404NotFound };
                 }
             }
             else
             {
-                return new BadRequestObjectResult("Error, something went wrong");
+                return new ObjectResult("No data found for exchange rate") { StatusCode = StatusCodes.Status404NotFound };
             }
         }
     }
