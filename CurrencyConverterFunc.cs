@@ -31,16 +31,17 @@ namespace CurrencyConverter.Function
     public class CurrencyConverterFunc
     {
         private const string CACHE_KEY = "EUR";
-        private readonly IConfiguration _configuration;
 
-        public CurrencyConverterFunc(IConfiguration configuration)
+        private readonly IConnectionMultiplexer _redis;
+
+        public CurrencyConverterFunc(IConnectionMultiplexer redis)
         {
-            _configuration = configuration;
+            _redis = redis;
         }
 
         [FunctionName("CurrencyConverterFunc")]
         public async Task<IActionResult> Run(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequest req,
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = null)] HttpRequest req,
             ILogger log)
         {
             string targetCurrency = req.Query["currency"];
@@ -48,7 +49,7 @@ namespace CurrencyConverter.Function
             if (string.IsNullOrEmpty(targetCurrency))
                 return new BadRequestObjectResult("Missing the query parameter currency in HTTP GET Request");
 
-            var cache = ConnectionMultiplexer.Connect(_configuration["RedisConnectionString"]).GetDatabase();
+            var cache = _redis.GetDatabase();
 
             var exchangeRateApiCachedData = await cache.StringGetAsync(CACHE_KEY);
 
@@ -61,7 +62,7 @@ namespace CurrencyConverter.Function
             else
             {
                 var httpClient = new HttpClient();
-                var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{_configuration["ExchangeRateApiKey"]}/latest/EUR";
+                var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{System.Environment.GetEnvironmentVariable("ExchangeRateApiKey", EnvironmentVariableTarget.Process)}/latest/EUR";
                 var response = await httpClient.GetAsync(exchangeRateApiUrl);
 
                 if (response.IsSuccessStatusCode)
