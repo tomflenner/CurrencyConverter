@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
@@ -8,7 +7,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using System.Net.Http;
-using Microsoft.Extensions.Configuration;
 using System.Collections.Generic;
 using StackExchange.Redis;
 
@@ -30,8 +28,6 @@ namespace CurrencyConverter.Function
 
     public class CurrencyConverterFunc
     {
-        private const string CACHE_KEY = "EUR";
-
         private readonly IConnectionMultiplexer _redis;
 
         public CurrencyConverterFunc(IConnectionMultiplexer redis)
@@ -44,14 +40,30 @@ namespace CurrencyConverter.Function
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = null)] HttpRequest req,
             ILogger log)
         {
-            string targetCurrency = req.Query["currency"];
+            string fromValueQueryParam = req.Query["fromValue"];
+            string fromCurrencyQueryParam = req.Query["fromCurrency"];
+            string toCurrencyQueryParam = req.Query["toCurrency"];
 
-            if (string.IsNullOrEmpty(targetCurrency))
-                return new BadRequestObjectResult("Missing the query parameter currency in HTTP GET Request");
+            if (string.IsNullOrEmpty(fromValueQueryParam))
+                return new BadRequestObjectResult("Missing the query parameter fromValue in HTTP GET Request");
+
+            if (string.IsNullOrEmpty(fromCurrencyQueryParam))
+                return new BadRequestObjectResult("Missing the query parameter fromCurrency in HTTP GET Request");
+
+            if (string.IsNullOrEmpty(toCurrencyQueryParam))
+                return new BadRequestObjectResult("Missing the query parameter toCurrency in HTTP GET Request");
+
+            decimal fromValue;
+
+            if (!decimal.TryParse(fromValueQueryParam, out fromValue))
+                return new ObjectResult(value: "Error while parsing fromValueQueryParam to decimal.") { StatusCode = StatusCodes.Status500InternalServerError };
+
+            fromCurrencyQueryParam = fromCurrencyQueryParam.ToUpper();
+            toCurrencyQueryParam = toCurrencyQueryParam.ToUpper();
 
             var cache = _redis.GetDatabase();
 
-            var exchangeRateApiCachedData = await cache.StringGetAsync(CACHE_KEY);
+            var exchangeRateApiCachedData = await cache.StringGetAsync(fromCurrencyQueryParam);
 
             ExchangeRateApiResponse exchangeRateApiResponse = null;
 
@@ -62,7 +74,7 @@ namespace CurrencyConverter.Function
             else
             {
                 var httpClient = new HttpClient();
-                var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{System.Environment.GetEnvironmentVariable("ExchangeRateApiKey", EnvironmentVariableTarget.Process)}/latest/EUR";
+                var exchangeRateApiUrl = $"https://v6.exchangerate-api.com/v6/{System.Environment.GetEnvironmentVariable("ExchangeRateApiKey", EnvironmentVariableTarget.Process)}/latest/{fromCurrencyQueryParam}";
                 var response = await httpClient.GetAsync(exchangeRateApiUrl);
 
                 if (response.IsSuccessStatusCode)
@@ -74,7 +86,7 @@ namespace CurrencyConverter.Function
 
                     TimeSpan expiry = specificDate - currentDate;
 
-                    await cache.StringSetAsync(CACHE_KEY, JsonConvert.SerializeObject(exchangeRateApiResponse), expiry);
+                    await cache.StringSetAsync(fromCurrencyQueryParam, JsonConvert.SerializeObject(exchangeRateApiResponse), expiry);
                 }
                 else
                 {
@@ -85,13 +97,20 @@ namespace CurrencyConverter.Function
             if (exchangeRateApiResponse.ConvertionRates is not null)
             {
                 decimal targetCurrencyRate;
-                if (exchangeRateApiResponse.ConvertionRates.TryGetValue(targetCurrency.ToUpper(), out targetCurrencyRate))
+                if (exchangeRateApiResponse.ConvertionRates.TryGetValue(toCurrencyQueryParam, out targetCurrencyRate))
                 {
-                    return new OkObjectResult(new { CurrencyCode = targetCurrency.ToUpper(), CurrencyRate = targetCurrencyRate, UnixTimeLastUpdate = exchangeRateApiResponse.UnixLastUpdateDate });
+                    return new OkObjectResult(new
+                    {
+                        FromCurrencyCode = fromCurrencyQueryParam,
+                        ToCurrencyCode = toCurrencyQueryParam,
+                        CurrencyRate = targetCurrencyRate,
+                        ConvertedValue = fromValue * targetCurrencyRate,
+                        UnixTimeLastUpdate = exchangeRateApiResponse.UnixLastUpdateDate
+                    });
                 }
                 else
                 {
-                    return new ObjectResult($"Currency {targetCurrency} not found") { StatusCode = StatusCodes.Status404NotFound };
+                    return new ObjectResult($"Currency {toCurrencyQueryParam} not found") { StatusCode = StatusCodes.Status404NotFound };
                 }
             }
             else
